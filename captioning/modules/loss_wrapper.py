@@ -17,7 +17,6 @@ class LossWrapper(torch.nn.Module):
     def forward(self, fc_feats, att_feats, labels, masks, att_masks, gts, gt_indices,
                 sc_flag, struc_flag, drop_worst_flag):
         opt = self.opt
-        
         out = {}
 
         reduction = 'none' if drop_worst_flag else 'mean'
@@ -44,6 +43,7 @@ class LossWrapper(torch.nn.Module):
             out['struc_loss'] = struc_loss['loss']
             out['reward'] = struc_loss['reward']
         elif not sc_flag:
+            predictions = self.model(fc_feats, att_feats, labels[..., :-1], att_masks)
             loss = self.crit(self.model(fc_feats, att_feats, labels[..., :-1], att_masks), labels[..., 1:], masks[..., 1:], reduction=reduction)
         else:
             self.model.eval()
@@ -63,5 +63,6 @@ class LossWrapper(torch.nn.Module):
             reward = torch.from_numpy(reward).to(sample_logprobs)
             loss = self.rl_crit(sample_logprobs, gen_result.data, reward, reduction=reduction)
             out['reward'] = reward[:,0].mean()
+        out['preds'] = predictions.detach()
         out['loss'] = loss
         return out

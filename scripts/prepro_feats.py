@@ -17,6 +17,8 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import sys
+sys.path.append(".")
 import json
 import argparse
 from random import shuffle, seed
@@ -31,8 +33,8 @@ import skimage.io
 
 from torchvision import transforms as trn
 preprocess = trn.Compose([
-                #trn.ToTensor(),
-                trn.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    #trn.ToTensor(),
+    trn.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
 from captioning.utils.resnet_utils import myResnet
@@ -43,7 +45,7 @@ def main(params):
     net = getattr(resnet, params['model'])()
     net.load_state_dict(torch.load(os.path.join(params['model_root'],params['model']+'.pth')))
     my_resnet = myResnet(net)
-    my_resnet.cuda()
+    my_resnet.cuda(params['gpu'])
     my_resnet.eval()
 
     imgs = json.load(open(params['input_json'], 'r'))
@@ -59,26 +61,30 @@ def main(params):
     if not os.path.isdir(dir_att):
         os.mkdir(dir_att)
 
-    for i,img in enumerate(imgs):
+    for i, img_data in enumerate(imgs):
         # load the image
-        I = skimage.io.imread(os.path.join(params['images_root'], img['filepath'], img['filename']))
+        img = skimage.io.imread(os.path.join(params['images_root'],
+                                             img_data['filepath'], img_data['filename']))
         # handle grayscale input images
-        if len(I.shape) == 2:
-            I = I[:,:,np.newaxis]
-            I = np.concatenate((I,I,I), axis=2)
+        if len(img.shape) == 2:
+            img = img[:, :, np.newaxis]
+            img = np.concatenate((img, img, img), axis=2)
 
-        I = I.astype('float32')/255.0
-        I = torch.from_numpy(I.transpose([2,0,1])).cuda()
-        I = preprocess(I)
+        img = img.astype('float32')/255.0
+        img = torch.from_numpy(img.transpose([2, 0, 1])).cuda()
+        img = preprocess(img)
         with torch.no_grad():
-            tmp_fc, tmp_att = my_resnet(I, params['att_size'])
+            tmp_fc, tmp_att = my_resnet(img, params['att_size'])
         # write to pkl
-        np.save(os.path.join(dir_fc, str(img['cocoid'])), tmp_fc.data.cpu().float().numpy())
-        np.savez_compressed(os.path.join(dir_att, str(img['cocoid'])), feat=tmp_att.data.cpu().float().numpy())
+        np.save(os.path.join(dir_fc, str(img_data['cocoid'])),
+                tmp_fc.data.cpu().float().numpy())
+        np.savez_compressed(os.path.join(dir_att, str(img_data['cocoid'])),
+                            feat=tmp_att.data.cpu().float().numpy())
 
         if i % 1000 == 0:
             print('processing %d/%d (%.2f%% done)' % (i, N, i*100.0/N))
     print('wrote ', params['output_dir'])
+
 
 if __name__ == "__main__":
 

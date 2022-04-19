@@ -111,7 +111,7 @@ class Dataset(data.Dataset):
             self.ix_to_word = self.info['ix_to_word']
             self.vocab_size = len(self.ix_to_word)
             print('vocab size is ', self.vocab_size)
-        
+
         # open the hdf5 file
         print('DataLoader loading h5 file: ', opt.input_fc_dir, opt.input_att_dir, opt.input_box_dir, opt.input_label_h5)
         """
@@ -317,7 +317,7 @@ class DataLoader:
             self.loaders[split] = data.DataLoader(dataset=self.dataset,
                                                   batch_size=self.batch_size,
                                                   sampler=sampler,
-                                                  pin_memory=True,
+                                                  pin_memory=False,
                                                   num_workers=4, # 4 is usually enough
                                                   collate_fn=partial(self.dataset.collate_func, split=split),
                                                   drop_last=False)

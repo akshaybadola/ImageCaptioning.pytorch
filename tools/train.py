@@ -29,8 +29,9 @@ def add_summary_value(writer, key, value, iteration):
     if writer:
         writer.add_scalar(key, value, iteration)
 
-def train(opt):
 
+def train(opt):
+    import ipdb; ipdb.set_trace()
     ################################
     # Build dataloader
     ################################
