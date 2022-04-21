@@ -369,6 +369,7 @@ class CaptionStepV2(UpdateFunction):
 def main():
     parser = argparse.ArgumentParser()
     # data params
+    parser.add_argument('cmd')
     parser.add_argument('model')
     parser.add_argument('dataset_name')
     parser.add_argument('--load-and-eval', action='store_true')
@@ -391,10 +392,21 @@ def main():
     parser.add_argument('--fc-dropout-ratio', type=float, default=0.5)
     # optimizer setting
     parser.add_argument('--optimizer', default="adam")
-    parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--num-epochs', type=int, default=50)
+    parser.add_argument('--lr', type=float, default=0.0004)
+    parser.add_argument('--num-epochs', type=int, default=200)
     args = parser.parse_args()
+    trainer = get_trainer(args)
+    if args.cmd == "train":
+        trainer.start()
+    elif args.cmd == "validate":
+        trainer.logdir = "test_logs"
+        trainer.validate()
+    elif args.cmd == "test":
+        trainer.logdir = "test_logs"
+        trainer.test()
 
+
+def get_trainer(args):
     print("Loading data with features")
     data, dataloaders, vocab = get_caption_data_with_features(
         "captiondata",
@@ -419,7 +431,7 @@ def main():
     vocab.items = lambda: vocab.idx2word.items()
     model = models.setup(model_opt)
     model.model_name = args.model
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-08)
     update_function = CaptionStepV2()
     criterion = losses.LanguageModelCriterion().cuda()
     model = model.cuda(int(args.gpus))
@@ -448,14 +460,15 @@ def main():
     trainer = Trainer("caption_trainer", trainer_params, optimizer, model, data,
                       dataloaders, update_function, criterion,
                       args.savedir, args.logdir, ddp_params={},
-                      extra_opts={"model_params": model_params[args.model]})
+                      extra_opts={"model_params": {k: v for k, v in model_params[args.model].items()
+                                                   if k != "vocab"}})
     trainer.trainer_params.save_best_on = "val"
     trainer.trainer_params.save_best_by = "loss"
     desc = trainer.describe_hook("post_batch_hook")
     if not any("post_batch_progress" in x for x in desc):
         trainer.add_to_hook_at_end("post_batch_hook", functions.post_batch_progress)
     trainer._save_best_predicate = check_min
-    trainer.start()
+    return trainer
 
 
 if __name__ == '__main__':

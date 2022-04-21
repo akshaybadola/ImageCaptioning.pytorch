@@ -25,6 +25,9 @@ from captioning.utils.rewards import init_scorer, get_self_critical_reward
 from captioning.modules.loss_wrapper import LossWrapper
 
 
+from main import get_caption_data_with_features
+
+
 def add_summary_value(writer, key, value, iteration):
     if writer:
         writer.add_scalar(key, value, iteration)
@@ -60,15 +63,18 @@ def maybe_load_old_infos(opt, infos):
 ##########################
 # Build model
 ##########################
-def build_model(opt, loader):
-    opt.vocab = loader.get_vocab()
-    model = models.setup(opt).cuda()
+def build_model(opt, loader=None, vocab=None, gpu=0):
+    if vocab is None:
+        opt.vocab = loader.get_vocab()
+    else:
+        opt.vocab = vocab
+    model = models.setup(opt).cuda(gpu)
     del opt.vocab
     # Load pretrained weights:
     if opt.start_from is not None and os.path.isfile(os.path.join(opt.start_from, 'model.pth')):
         model.load_state_dict(torch.load(os.path.join(opt.start_from, 'model.pth')))
 
-    # DEBUG: 
+    # DEBUG:
     # data = loader.get_batch('train')
 
     # Wrap generation model with loss function(used for training)
@@ -120,7 +126,8 @@ def _init(infos, loader, optimizer, dp_lw_model):
     iteration = infos['iter']
     epoch = infos['epoch']
     update_iterators(infos)
-    loader.load_state_dict(infos['loader_state_dict'])
+    if loader is not None:
+        loader.load_state_dict(infos['loader_state_dict'])
     if opt.load_best_score == 1:
         best_val_score = infos.get('best_val_score', None)
     if opt.noamopt:
@@ -174,7 +181,8 @@ def post_epoch_hook(opt, epoch, model, optimizer, sc_flag, struc_flag, drop_wors
     return sc_flag, struc_flag, drop_worst_flag
 
 
-def train_step(opt, model, dp_lw_model, batch, optimizer, iteration, sc_flag, struc_flag, drop_worst_flag):
+def train_step(opt, model, dp_lw_model, batch, optimizer, iteration, sc_flag,
+               struc_flag, drop_worst_flag, correct_dict=None):
     torch.cuda.synchronize()
     start = time.time()
 
@@ -190,7 +198,11 @@ def train_step(opt, model, dp_lw_model, batch, optimizer, iteration, sc_flag, st
     masks_ = masks[..., 1:].view(*preds.shape[:2])
     inds = torch.where(masks_)
     correct = (preds.argmax(2)[inds] == labels_.view(*preds.shape[:2])[inds]).sum()
-    print(f"{correct} correct out of {len(inds[0])}")
+    if correct_dict is not None:
+        correct_dict["correct_iters"] += correct
+        correct_dict["total_iters"] += len(inds[0])
+    else:
+        print(f"{correct} correct out of {len(inds[0])}")
     if not drop_worst_flag:
         loss = model_out['loss'].mean()
     else:
@@ -207,11 +219,11 @@ def train_step(opt, model, dp_lw_model, batch, optimizer, iteration, sc_flag, st
     return model_out, train_loss, end-start
 
 
-def eval_step(opt, model, dp_model, lw_model, dp_lw_model, loader, optimizer,
-              tb_summary_writer, histories, iteration, epoch_done):
+def evaluate(opt, model, dp_model, lw_model, dp_lw_model, loader, optimizer,
+             tb_summary_writer, histories, iteration, epoch_done):
     # make evaluation on validation set, and save model
     if (iteration % opt.save_checkpoint_every == 0 and not opt.save_every_epoch) or \
-        (epoch_done and opt.save_every_epoch):
+       (epoch_done and opt.save_every_epoch):
         # eval model
         eval_kwargs = {'split': 'val', 'dataset': opt.input_json}
         eval_kwargs.update(vars(opt))
@@ -289,6 +301,18 @@ def write_summary(opt, tb_summary_writer, histories, model, model_out, optimizer
         histories['ss_prob_history'][iteration] = model.ss_prob
 
 
+def get_dataloader_from_main(opt, dataset_name, num_workers):
+    data, dataloaders, vocab = get_caption_data_with_features(
+        "captiondata",
+        dataset_name,
+        {k: opt.batch_size for k in
+         ["train", "val", "test", "restval"]},
+        {k: num_workers for k in
+         ["train", "val", "test", "restval"]},
+        mode="group")
+    return data, dataloaders, vocab
+
+
 def train(opt):
     ################################
     # Build dataloader
@@ -315,6 +339,7 @@ def train(opt):
     # build optimizer
     optimizer = build_optimizer(opt, model)
     # initialize things
+    # NOTE: changed
     iteration, epoch, best_val_score, epoch_done = _init(infos, loader, optimizer, dp_lw_model)
 
     # Start training
@@ -366,10 +391,10 @@ def train(opt):
             infos['epoch'] = epoch
             infos['loader_state_dict'] = loader.state_dict()
 
-            lang_stats, val_loss = eval_step(opt, model, dp_model, lw_model,
-                                             dp_lw_model, loader, optimizer,
-                                             tb_summary_writer, histories,
-                                             iteration, epoch_done)
+            lang_stats, val_loss = evaluate(opt, model, dp_model, lw_model,
+                                            dp_lw_model, loader, optimizer,
+                                            tb_summary_writer, histories,
+                                            iteration, epoch_done)
             if lang_stats and val_loss:
                 best_val_score, best_flag = check_val_score(opt, lang_stats, val_loss, best_val_score)
                 save_checkpoint(opt, model, optimizer, infos, histories, epoch,
@@ -382,5 +407,100 @@ def train(opt):
         print(stack_trace)
 
 
+def train_other(opt):
+    ################################
+    # Build dataloader
+    ################################
+    data, dataloaders, vocab = get_dataloader_from_main(opt, "flickr30k", 8)
+    opt.vocab_size = len(vocab)
+    opt.seq_length = data["train"]._seq_length
+
+    ##########################
+    # Initialize infos
+    ##########################
+    infos = {
+        'iter': 0,
+        'epoch': 0,
+        'loader_state_dict': None,
+        'vocab': vocab,
+    }
+    # load infos
+    infos = maybe_load_old_infos(opt, infos)
+    # build logger
+    histories, tb_summary_writer = build_logger(opt)
+    # build model
+    model, dp_model, lw_model, dp_lw_model = build_model(opt, vocab=vocab, gpu=0)
+    # build optimizer
+    optimizer = build_optimizer(opt, model)
+    # initialize things
+    iteration, epoch, best_val_score, epoch_done = _init(infos, None, optimizer, dp_lw_model)
+
+    # Start training
+    sc_flag = False
+    struc_flag = False
+    drop_worst_flag = False
+    correct_dict = {"correct_iters": 0, "total_iters": 0,
+                    "correct_loop": 0,
+                    "total_loop": 0}
+    try:
+        while True:
+            if check_max_epoch(opt, epoch):
+                break
+
+            if epoch_done:
+                sc_flag, struc_flag, drop_worst_flag =\
+                    post_epoch_hook(opt, epoch, model, optimizer, sc_flag, struc_flag, drop_worst_flag)
+                epoch_done = False
+            import ipdb; ipdb.set_trace()
+            maybe_adjust_lr(opt, optimizer, iteration)
+            total_iters = len(dataloaders["train"])
+            for iteration, batch in enumerate(dataloaders["train"]):
+                model_out, train_loss, train_time =\
+                    train_step(opt, model, dp_lw_model, batch, optimizer,
+                               iteration, sc_flag, struc_flag, drop_worst_flag,
+                               correct_dict=correct_dict)
+
+                if not (iteration+1) % 10:
+                    # print stuff
+                    if struc_flag:
+                        print("iter {} (epoch {}), train_loss = {:.3f}, lm_loss = {:.3f}, struc_loss = {:.3f}, time/batch = {:.3f}"
+                              .format(iteration, epoch, train_loss, model_out['lm_loss'].mean().item(),
+                                      model_out['struc_loss'].mean().item(), train_time))
+                    elif not sc_flag:
+                        print("iter {} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}"
+                              .format(iteration, epoch, train_loss, train_time))
+                    else:
+                        print("iter {} (epoch {}), avg_reward = {:.3f}, time/batch = {:.3f}"
+                              .format(iteration, epoch, model_out['reward'].mean(), train_time))
+                    print(f"iter: {iteration+1}/{total_iters}")
+                    _correct, _total, _, _ = correct_dict.values()
+                    correct_dict.update({"correct_iters": 0, "total_iters": 0})
+                    print(f"Total correct {_correct}/{_total}")
+                    # write_summary
+                write_summary(opt, tb_summary_writer, histories, model, model_out, optimizer,
+                              train_loss, iteration, sc_flag, struc_flag)
+                # update infos
+                infos['iter'] = iteration
+                infos['epoch'] = epoch
+            _, _, _correct, _total = correct_dict.values()
+            print(f"Total correct for epoch {epoch}: {_correct}/{_total}")
+            epoch += 1
+            lang_stats, val_loss = evaluate(opt, model, dp_model, lw_model,
+                                            dp_lw_model, dataloaders["val"], optimizer,
+                                            tb_summary_writer, histories,
+                                            iteration, epoch_done)
+            if lang_stats and val_loss:
+                best_val_score, best_flag = check_val_score(opt, lang_stats, val_loss, best_val_score)
+                save_checkpoint(opt, model, optimizer, infos, histories, epoch,
+                                iteration, best_val_score, best_flag)
+            epoch_done = True
+    except (RuntimeError, KeyboardInterrupt) as e:
+        print('Save ckpt on exception ...')
+        utils.save_checkpoint(opt, model, infos, optimizer)
+        print('Save ckpt done.')
+        stack_trace = traceback.format_exc()
+        print(stack_trace)
+
+
 opt = opts.parse_opt()
-train(opt)
+train_other(opt)

@@ -125,6 +125,7 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
 
     return out
 
+
 def eval_split(model, crit, loader, eval_kwargs={}):
     verbose = eval_kwargs.get('verbose', True)
     verbose_beam = eval_kwargs.get('verbose_beam', 0)
@@ -150,9 +151,17 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     loss_evals = 1e-8
     predictions = []
     n_predictions = [] # when sample_n > 1
+
+    it = loader.__iter__()
     while True:
-        data = loader.get_batch(split)
-        n = n + len(data['infos'])
+        # NOTE: changed
+        # data = loader.get_batch(split)
+        # n = n + len(data['infos'])
+
+        try:
+            data = next(it)
+        except StopIteration:
+            break
 
         tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
         tmp = [_.to(device) if _ is not None else _ for _ in tmp]
@@ -160,7 +169,8 @@ def eval_split(model, crit, loader, eval_kwargs={}):
         if labels is not None and verbose_loss:
             # forward the model to get loss
             with torch.no_grad():
-                loss = crit(model(fc_feats, att_feats, labels[..., :-1], att_masks), labels[..., 1:], masks[..., 1:]).item()
+                loss = crit(model(fc_feats, att_feats, labels[..., :-1], att_masks),
+                            labels[..., 1:], masks[..., 1:]).item()
             loss_sum = loss_sum + loss
             loss_evals = loss_evals + 1
 
@@ -170,33 +180,40 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             tmp_eval_kwargs.update({'sample_n': 1})
             seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
             seq = seq.data
-            entropy = - (F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
-            perplexity = - seq_logprobs.gather(2, seq.unsqueeze(2)).squeeze(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
-        
+            entropy = - ((F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) /
+                         ((seq > 0).to(seq_logprobs).sum(1)+1))
+            perplexity = - (seq_logprobs.gather(2, seq.unsqueeze(2)).squeeze(2).sum(1) /
+                            ((seq > 0).to(seq_logprobs).sum(1)+1))
+
         # Print beam search
         if beam_size > 1 and verbose_beam:
             for i in range(fc_feats.shape[0]):
-                print('\n'.join([utils.decode_sequence(model.vocab, _['seq'].unsqueeze(0))[0] for _ in model.done_beams[i]]))
+                print('\n'.join([utils.decode_sequence(model.vocab, _['seq'].unsqueeze(0))[0]
+                                 for _ in model.done_beams[i]]))
                 print('--' * 10)
         sents = utils.decode_sequence(model.vocab, seq)
 
         for k, sent in enumerate(sents):
-            entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'perplexity': perplexity[k].item(), 'entropy': entropy[k].item()}
+            entry = {'image_id': data['infos'][k]['id'], 'caption': sent,
+                     'perplexity': perplexity[k].item(), 'entropy': entropy[k].item()}
             if eval_kwargs.get('dump_path', 0) == 1:
                 entry['file_name'] = data['infos'][k]['file_path']
             predictions.append(entry)
             if eval_kwargs.get('dump_images', 0) == 1:
                 # dump the raw image to vis/ folder
-                cmd = 'cp "' + os.path.join(eval_kwargs['image_root'], data['infos'][k]['file_path']) + '" vis/imgs/img' + str(len(predictions)) + '.jpg' # bit gross
+                cmd = 'cp "' + os.path.join(eval_kwargs['image_root'],
+                                            data['infos'][k]['file_path']) +\
+                                            '" vis/imgs/img' + str(len(predictions)) +\
+                                            '.jpg'  # bit gross
                 print(cmd)
                 os.system(cmd)
 
             if verbose:
-                print('image %s: %s' %(entry['image_id'], entry['caption']))
+                print('image %s: %s' % (entry['image_id'], entry['caption']))
 
         if sample_n > 1:
             eval_split_n(model, n_predictions, [fc_feats, att_feats, att_masks, data], eval_kwargs)
-        
+
         # ix0 = data['bounds']['it_pos_now']
         ix1 = data['bounds']['it_max']
         if num_images != -1:
@@ -207,7 +224,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             predictions.pop()
 
         if verbose:
-            print('evaluating validation preformance... %d/%d (%f)' %(n, ix1, loss))
+            print('evaluating validation preformance... %d/%d (%f)' % (n, ix1, loss))
 
         if num_images >= 0 and n >= num_images:
             break
@@ -217,7 +234,9 @@ def eval_split(model, crit, loader, eval_kwargs={}):
         n_predictions = sorted(n_predictions, key=lambda x: x['perplexity'])
     if not os.path.isdir('eval_results'):
         os.mkdir('eval_results')
-    torch.save((predictions, n_predictions), os.path.join('eval_results/', '.saved_pred_'+ eval_kwargs['id'] + '_' + split + '.pth'))
+    torch.save((predictions, n_predictions),
+               os.path.join('eval_results/', '.saved_pred_' +
+                            eval_kwargs['id'] + '_' + split + '.pth'))
     if lang_eval == 1:
         lang_stats = language_eval(dataset, predictions, n_predictions, eval_kwargs, split)
 

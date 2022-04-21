@@ -137,6 +137,9 @@ class Vocabulary(object):
         self._counts = self._all_counts.copy()
         self._init()
 
+    def items(self):
+        return self.idx2word.items()
+
     def truncate(self, cutoff_by, threshold, force=False):
         """Removes least frequent words. Cuts off the word by specified method
 

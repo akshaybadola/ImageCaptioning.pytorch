@@ -94,7 +94,7 @@ class AttModel(CaptionModel):
 
         # For remove bad endding
         self.vocab = opt.vocab
-        self.bad_endings_ix = [int(k) for k,v in self.vocab.items() if v in bad_endings]
+        self.bad_endings_ix = [int(k) for k, v in self.vocab.items() if v in bad_endings]
 
     def init_hidden(self, bsz):
         weight = self.logit.weight \
